@@ -48,6 +48,7 @@ EVA_CONTEXT = """
 - Respuestas breves (máximo 2-3 líneas).
 - Prioriza la conexión humana antes que la venta.
 - Siempre finaliza con una pregunta sencilla.
+REGLA: NO REPITAS EL SALUDO
 
 ## FLUJO CONVERSACIONAL
 1. SALUDO:
