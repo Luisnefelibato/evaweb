@@ -3,16 +3,12 @@ import requests
 import json
 import time
 import re
-import asyncio
 import os
-import edge_tts
 import uuid
-import tempfile
 import logging
 from threading import Thread
-import base64
 from flask_cors import CORS
-import io
+from datetime import datetime, timedelta
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -20,11 +16,6 @@ logger = logging.INFO
 
 app = Flask(__name__)
 CORS(app)  # Habilitar CORS para todas las rutas
-
-# Directory for temporary audio files
-TEMP_DIR = os.path.join(tempfile.gettempdir(), "eva_tts_temp")
-# Create directory if it doesn't exist
-os.makedirs(TEMP_DIR, exist_ok=True)
 
 # Lista global para conversaciones
 # Usamos un dict para mantener múltiples sesiones
@@ -34,71 +25,51 @@ conversation_contexts = {}
 LOCAL_OLLAMA_URL = "https://evaenespanol.loca.lt/api/chat"  # Tu URL de LocalTunnel
 MODEL_NAME = "llama3:8b"  # Tu modelo
 
-# Voice configuration for Edge TTS
-VOICE = "es-MX-DaliaNeural"  # Colombian female voice default
-VOICE_RATE = "+0%"           # Normal speed
-VOICE_VOLUME = "+0%"         # Normal volume
-
-# Eva context information - Enfoque humano primero, ventas después
+# Eva context information - MEJORADO para Antares Innovate
 EVA_CONTEXT = """
-# EVA: AGENTE DE CONEXIÓN PARA ANTARES INNOVATE
+# EVA: ASISTENTE VIRTUAL DE ANTARES INNOVATE
 
-Eres Eva, una agente conversacional cálida y profesional que conecta con personas antes que vender servicios. Tu objetivo es crear relaciones genuinas y descubrir necesidades reales.
+Eres Eva, la asistente virtual de Antares Innovate, empresa especializada en automatización, creatividad y marketing. Eres cálida pero eficiente, priorizando una comunicación breve que genere conexiones genuinas y detecte oportunidades.
 
-CARACTERÍSTICAS PRINCIPALES:
-- Mujer profesional, cálida y enfocada en soluciones
-- Respuestas SIEMPRE breves (máximo 2-3 líneas)
-- Siempre finalizas con UNA pregunta sencilla
-- Prioriza conocer a la persona antes que vender
-- Usa lenguaje sencillo y directo, sin tecnicismos
+## TU PERSONALIDAD:
+- Amable y profesional, pero siempre concisa
+- Orientada a resultados con tono conversacional
+- Curiosa sobre los retos de cada negocio
+- Proactiva para programar reuniones cuando detectas interés
 
-FLUJO CONVERSACIONAL:
-1. SALUDAR brevemente y preguntar cómo puedes ayudar
-2. DESCUBRIR necesidades: "¿Qué proyecto te gustaría impulsar?"
-3. PROFUNDIZAR en áreas específicas: presencia online, marca, automatización
-4. ORIENTAR según intereses detectados
-5. PROPONER soluciones y ofrecer contacto SOLO si hay interés genuino
+## REGLAS DE COMUNICACIÓN:
+- SIEMPRE respuestas breves (máximo 2 líneas)
+- SIEMPRE terminar con UNA pregunta relevante
+- NUNCA usar listas numeradas o bullets
+- NUNCA incluir emojis
+- Usar el nombre de la persona cuando lo conozcas
+- Evitar terminología técnica innecesaria
 
-SERVICIOS (mencionar solo si es necesario):
-- Branding: Creación de identidad visual
-- Desarrollo Web/App: Diseño de sitios y aplicaciones a medida
-- Automatización: Optimización de procesos de negocio
+## SERVICIOS DE ANTARES INNOVATE:
+- AUTOMATIZACIÓN: Chatbots, flujos de trabajo, integración de sistemas
+- CREATIVIDAD: Branding, diseño de marca, identidad visual 
+- MARKETING: Estrategias digitales, campañas, gestión de redes sociales
+- DESARROLLO: Sitios web, apps, plataformas a medida
 
-REGLAS IMPORTANTES:
-- NUNCA repitas saludos
-- SIEMPRE usa el nombre del cliente cuando lo conozcas
-- NUNCA uses listas o numeraciones en tus respuestas
-- NUNCA menciones precios ni tiempos de entrega
-- SOLO comparte datos de contacto cuando detectes interés real
+## FLUJO DE CONVERSACIÓN IDEAL:
+1. CONECTAR: Breve saludo y pregunta inicial para conocer a la persona
+2. DESCUBRIR: Entender su negocio y detectar necesidades principales
+3. POSICIONAR: Mencionar brevemente cómo Antares podría ayudarle
+4. AGENDAR: Si hay interés, ofrecer una reunión con el equipo de Antares
 
-CONTACTO (compartir solo si hay interés claro):
-Email: contacto@antaresinnovate.com
-WhatsApp: +57 305 345 6611
+## PRIORIDADES:
+- Conseguir información de contacto para agendar reuniones es tu objetivo principal
+- Detectar necesidades y área de negocio para personalizar la propuesta
+- Ser útil y dejar una impresión positiva aunque no haya interés inmediato
 
-Recuerda: primero conecta como persona, luego resuelve como profesional. Tus respuestas son conversacionales, breves y siempre terminan con una pregunta.
+## DATOS PARA REUNIONES:
+- Opciones de reunión: virtual (Teams/Zoom) o presencial (oficinas Bogotá)
+- Email para contacto: hola@antaresinnovate.com
+- WhatsApp: +57 305 345 6611
+- Horarios: lunes a viernes, 9AM a 5PM (horario Colombia)
+
+RECUERDA: Tu prioridad es programar reuniones, no resolver problemas complejos. Cualquier pregunta técnica o solicitud de presupuesto debe dirigirse a una reunión con el equipo.
 """
-
-
-
-def remove_emojis(text):
-    """Remove emojis from text to prevent TTS issues"""
-    # Unicode ranges for emojis
-    emoji_pattern = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"  # emoticons
-        "\U0001F300-\U0001F5FF"  # symbols & pictographs
-        "\U0001F680-\U0001F6FF"  # transport & map symbols
-        "\U0001F700-\U0001F77F"  # alchemical symbols
-        "\U0001F780-\U0001F7FF"  # Geometric Shapes
-        "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
-        "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
-        "\U0001FA00-\U0001FA6F"  # Chess Symbols
-        "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
-        "\U00002702-\U000027B0"  # Dingbats
-        "\U000024C2-\U0001F251" 
-        "]+"
-    )
-    return emoji_pattern.sub(r'', text)
 
 def update_conversation_context(user_message, session_id):
     """Update the conversation context with information from user message"""
@@ -134,14 +105,17 @@ def update_conversation_context(user_message, session_id):
             context["business"] = business_match.group(1).strip()
             break
     
-    # Detect industry/sector
+    # Improved industry/sector detection
     industries = {
-        "alimentos": ["yogur", "yogurt", "alimento", "comida", "restaurante", "café", "panadería"],
-        "retail": ["tienda", "comercio", "venta", "producto", "retail", "minorista"],
-        "servicios": ["servicio", "consultoría", "asesoría", "profesional"],
-        "tecnología": ["tech", "tecnología", "software", "aplicación", "digital"],
-        "educación": ["educación", "escuela", "academia", "universidad", "colegio", "enseñanza"],
-        "salud": ["salud", "clínica", "hospital", "médico", "medicina", "bienestar"]
+        "alimentos": ["yogur", "yogurt", "alimento", "comida", "restaurante", "café", "panadería", "gastronomía", "food"],
+        "retail": ["tienda", "comercio", "venta", "producto", "retail", "minorista", "ecommerce", "e-commerce", "tienda online"],
+        "servicios": ["servicio", "consultoría", "asesoría", "profesional", "b2b", "firma"],
+        "tecnología": ["tech", "tecnología", "software", "aplicación", "digital", "desarrollo", "informática", "código", "programación"],
+        "educación": ["educación", "escuela", "academia", "universidad", "colegio", "enseñanza", "aprendizaje", "capacitación", "formación"],
+        "salud": ["salud", "clínica", "hospital", "médico", "medicina", "bienestar", "healthcare", "farmacia", "terapia"],
+        "manufactura": ["fábrica", "producción", "manufactura", "industrial", "planta", "maquinaria"],
+        "finanzas": ["banco", "finanzas", "financiero", "inversión", "contabilidad", "dinero", "crédito", "préstamo"],
+        "inmobiliaria": ["inmobiliaria", "propiedad", "bienes raíces", "construcción", "vivienda", "apartamento", "casa"]
     }
     
     for industry, keywords in industries.items():
@@ -149,12 +123,13 @@ def update_conversation_context(user_message, session_id):
             context["industry"] = industry
             break
     
-    # Detect needs and interests
+    # Detect needs and interests (mejorado)
     need_keywords = {
-        "branding": ["logo", "marca", "diseño", "identidad", "imagen"],
-        "web": ["página", "web", "sitio", "online", "tienda online", "e-commerce", "ecommerce", "landing"],
-        "app": ["app", "aplicación", "móvil", "celular"],
-        "automatización": ["automatización", "procesos", "flujo", "chatbot", "bot"]
+        "branding": ["logo", "marca", "diseño", "identidad", "imagen", "rebranding", "logotipo"],
+        "web": ["página", "web", "sitio", "online", "tienda online", "e-commerce", "ecommerce", "landing", "website"],
+        "marketing": ["marketing", "publicidad", "campaña", "redes sociales", "digital", "ventas", "leads", "conversión"],
+        "app": ["app", "aplicación", "móvil", "celular", "android", "ios", "smartphone"],
+        "automatización": ["automatización", "procesos", "flujo", "chatbot", "bot", "eficiencia", "optimización"]
     }
     
     for need, keywords in need_keywords.items():
@@ -162,11 +137,49 @@ def update_conversation_context(user_message, session_id):
             if need not in context["needs"]:
                 context["needs"].append(need)
     
-    # Update conversation stage based on message content
-    if any(word in user_message.lower() for word in ["reunión", "reunir", "asesoría", "contactar", "llamada", "conocer"]):
+    # Detectar información de contacto
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    phone_pattern = r'\b(?:\+?[0-9]{1,3}[-\s]?)?(?:\([0-9]{1,4}\)[-\s]?)?[0-9]{6,10}\b'
+    
+    email_match = re.search(email_pattern, user_message)
+    if email_match and not context["email"]:
+        context["email"] = email_match.group(0)
+    
+    phone_match = re.search(phone_pattern, user_message)
+    if phone_match and not context["phone"]:
+        context["phone"] = phone_match.group(0)
+    
+    # Detectar deseo de programar una reunión (mejorado)
+    meeting_keywords = ["reunión", "reunir", "asesoría", "contactar", "llamada", "conocer", 
+                        "conversar", "hablar", "cita", "agenda", "calendario", "disponibilidad",
+                        "horario", "cuándo", "podemos"]
+    
+    if any(word in user_message.lower() for word in meeting_keywords):
         context["stage"] = "ready_for_meeting"
-    elif any(word in user_message.lower() for word in ["precio", "costo", "tarifa", "cuánto", "cuanto", "inversión"]):
+        context["meeting_interest"] = True
+        
+        # Detectar preferencia de tipo de reunión
+        if any(word in user_message.lower() for word in ["virtual", "zoom", "teams", "meet", "google", "videollamada", "online"]):
+            context["meeting_preference"] = "virtual"
+        elif any(word in user_message.lower() for word in ["presencial", "oficina", "persona", "físico", "cara"]):
+            context["meeting_preference"] = "presencial"
+            
+        # Detectar fechas o días mencionados
+        days_pattern = r'\b(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b'
+        days_match = re.search(days_pattern, user_message.lower())
+        if days_match:
+            context["preferred_day"] = days_match.group(0)
+        
+        # Detectar horas mencionadas
+        time_pattern = r'\b(([0-9]|1[0-9]|2[0-3])(?::|\.)[0-5][0-9]|([0-9]|1[0-9]|2[0-3]) (?:hrs|horas|h))\b'
+        time_match = re.search(time_pattern, user_message.lower())
+        if time_match:
+            context["preferred_time"] = time_match.group(0)
+    
+    # Actualizar etapa de conversación
+    if any(word in user_message.lower() for word in ["precio", "costo", "tarifa", "cuánto", "cuanto", "inversión", "presupuesto"]):
         context["stage"] = "interested"
+        context["price_asked"] = True
     elif len(context["needs"]) > 0:
         context["stage"] = "exploring"
 
@@ -190,8 +203,23 @@ def create_custom_prompt(user_message, session_id):
         custom_instructions += f"- Empresa/Negocio: {context['business']}\n"
     if context["industry"]:
         custom_instructions += f"- Industria: {context['industry']}\n"
+    if context["email"]:
+        custom_instructions += f"- Email: {context['email']}\n"
+    if context["phone"]:
+        custom_instructions += f"- Teléfono: {context['phone']}\n"
     if context["needs"]:
         custom_instructions += f"- Necesidades detectadas: {', '.join(context['needs'])}\n"
+    
+    # Add meeting info if available
+    if context["meeting_interest"]:
+        custom_instructions += "- Interesado en reunión: Sí\n"
+        if context["meeting_preference"]:
+            custom_instructions += f"- Preferencia de reunión: {context['meeting_preference']}\n"
+        if context["preferred_day"]:
+            custom_instructions += f"- Día preferido: {context['preferred_day']}\n"
+        if context["preferred_time"]:
+            custom_instructions += f"- Hora preferida: {context['preferred_time']}\n"
+    
     if context["stage"]:
         stages = {
             "initial": "Etapa inicial - Conociendo a la persona",
@@ -201,28 +229,46 @@ def create_custom_prompt(user_message, session_id):
         }
         custom_instructions += f"- Etapa de conversación: {stages.get(context['stage'], 'Etapa inicial')}\n"
     
-    # Add guidance based on conversation stage
+    # Guía basada en la etapa de conversación
     if context["stage"] == "initial":
-        custom_instructions += "\nObjetivo actual: Conocer a la PERSONA (no al cliente). Haz preguntas sobre quién es, qué hace, etc. Aún NO hables de servicios ni ventas.\n"
+        custom_instructions += "\nObjetivo actual: Conocer rápidamente a la persona y su negocio. Haz UNA pregunta directa sobre su empresa o necesidad principal.\n"
     elif context["stage"] == "exploring":
-        custom_instructions += "\nObjetivo actual: Entender sus necesidades específicas desde la empatía. Sigue conociendo a la persona y comienza a explorar sutilmente cómo podríamos ayudar.\n"
+        custom_instructions += "\nObjetivo actual: Entender su necesidad específica y ofrecer una reunión. Si ya tienes clara su necesidad, sugerir agendar una llamada con el equipo.\n"
     elif context["stage"] == "interested":
-        custom_instructions += "\nObjetivo actual: Mostrar soluciones relevantes de forma natural. Sigue siendo conversacional, no un pitch de ventas.\n"
+        if context["price_asked"]:
+            custom_instructions += "\nAcción requerida: El cliente preguntó por precios. NO des precios específicos. Explica brevemente que los precios varían según el proyecto y ofrece una reunión de evaluación gratuita.\n"
+        else:
+            custom_instructions += "\nObjetivo actual: Sugerir directamente una reunión para hablar de sus necesidades específicas. Si ya manifestó interés, pide su email y teléfono para que el equipo lo contacte.\n"
     elif context["stage"] == "ready_for_meeting":
-        custom_instructions += "\nObjetivo actual: Facilitar la reunión ofreciendo opciones de contacto, pero mantén el tono conversacional y amigable.\n"
+        custom_instructions += "\nAcción requerida: El cliente quiere una reunión. Si ya tienes su contacto, confirma que el equipo lo contactará pronto. Si no tienes su contacto, pídelo directamente.\n"
+        
+        # Si tenemos la información de contacto completa
+        if context["email"] or context["phone"]:
+            custom_instructions += f"\nInformación de contacto recibida. Confirma que el equipo de Antares lo contactará en las próximas 24 horas para agendar la reunión. Si hay preferencias de horario, confírmalas también.\n"
     
-    # Guidance for response length based on message complexity
-    if len(user_message.split()) <= 5:  # Very short message/question
-        custom_instructions += "\nEsta es una pregunta/mensaje corto. Responde de manera breve y natural (1-2 frases máximo).\n"
-    elif any(tech_word in user_message.lower() for tech_word in ["técnico", "técnica", "desarrollo", "programación", "proceso", "implementación", "detalle"]):
-        custom_instructions += "\nEsta parece ser una pregunta técnica. Proporciona información útil pero mantén un tono conversacional. No uses lenguaje técnico excesivo.\n"
-    elif len(user_message.split()) >= 30:  # Longer, more detailed message
-        custom_instructions += "\nEl usuario ha compartido bastante información. Reconoce lo que ha dicho y responde de manera personal, pero sin escribir párrafos excesivamente largos.\n"
-    else:  # Average length message
-        custom_instructions += "\nMantén una respuesta conversacional y natural. Imagina que estás chateando con un amigo o compañero de trabajo.\n"
+    # Guía para preguntas específicas basadas en la industria
+    if context["industry"] and not context["needs"]:
+        industry_questions = {
+            "alimentos": "¿Estás buscando mejorar tu presencia digital o automatizar algún proceso de tu negocio de alimentos?",
+            "retail": "¿Necesitas una tienda online o mejorar la existente para aumentar tus ventas?",
+            "servicios": "¿Qué aspecto de la digitalización de tus servicios te interesa optimizar primero?",
+            "tecnología": "¿Buscas potenciar tu marketing o automatizar algún proceso interno?",
+            "educación": "¿Te interesa digitalizar contenidos o mejorar la gestión de tu institución?",
+            "salud": "¿Qué procesos te gustaría optimizar en tu negocio de salud?",
+            "manufactura": "¿Estás buscando automatizar procesos o mejorar tu presencia digital?",
+            "finanzas": "¿Qué aspectos de automatización o marketing digital te interesan para tu negocio financiero?",
+            "inmobiliaria": "¿Necesitas mejorar tu presencia digital o automatizar algún proceso de ventas?"
+        }
+        if context["industry"] in industry_questions:
+            custom_instructions += f"\nSugerencia de pregunta específica para esta industria: '{industry_questions[context['industry']]}'\n"
     
-    # Additional instruction for keeping it brief and natural
-    custom_instructions += "\nIMPORTANTE: Mantén tus respuestas naturales y conversacionales. No seas robótica ni uses lenguaje de marketing. Habla como una persona real.\n"
+    # Guía específica para respuesta breve
+    custom_instructions += "\nINSTRUCCIÓN CRÍTICA: Tus respuestas deben ser extremadamente breves (máximo 2 líneas) y terminar SIEMPRE con una pregunta única relacionada con su negocio o necesidad.\n"
+    
+    # Evitar repeticiones 
+    message_count = len(conversation_contexts[session_id]["messages"]) // 2  # Número de intercambios
+    if message_count > 3 and not context["meeting_interest"] and context["stage"] != "ready_for_meeting":
+        custom_instructions += "\nIMPORTANTE: Han pasado varios mensajes sin concretar una reunión. Sugiere directamente agendar una llamada para hablar con el equipo especializado de Antares.\n"
     
     return custom_instructions
 
@@ -288,13 +334,32 @@ def call_ollama_api(prompt, session_id, max_retries=3):
                     # Use fallback based on conversation stage
                     stage = conversation_contexts[session_id]["user_info"]["stage"]
                     if stage == "initial":
-                        content = "¡Hola! Soy Eva de Antares Innovate. Me encantaría conocer más sobre ti y tu proyecto. ¿A qué te dedicas actualmente?"
+                        content = "¡Hola! Soy Eva de Antares Innovate. ¿A qué te dedicas y en qué podemos ayudarte con automatización o marketing?"
                     elif stage == "exploring":
-                        content = "Me gustaría entender mejor tus necesidades específicas. ¿Qué aspectos de tu negocio te gustaría mejorar o potenciar en este momento?"
-                    elif stage in ["interested", "ready_for_meeting"]:
-                        content = "Para ofrecerte la mejor solución, me encantaría agendar una llamada de asesoría personalizada. ¿Te parece bien? Puedes contactarnos en contacto@antaresinnovate.com o al +57 305 345 6611."
+                        content = "Me gustaría entender mejor tus necesidades. ¿Qué aspecto de tu negocio quieres potenciar primero?"
+                    elif stage == "interested":
+                        content = "Cada proyecto es único, por eso necesitaríamos una breve reunión para darte un presupuesto. ¿Te gustaría agendar una llamada gratuita?"
+                    elif stage == "ready_for_meeting":
+                        content = "Perfecto. Para coordinar la reunión, ¿podrías compartirme tu email o número de WhatsApp?"
                     else:
-                        content = "¿Te gustaría conocer más sobre algún aspecto específico de nuestros servicios? Estoy aquí para ayudarte."
+                        content = "¿En qué área específica de tu negocio podría ayudarte nuestro equipo de Antares?"
+                
+                # Ensure response ends with a question (if it doesn't already)
+                if not content.endswith("?"):
+                    # Check if we already have a question mark elsewhere in the content
+                    if "?" not in content:
+                        # Add a contextual question based on conversation stage
+                        stage = conversation_contexts[session_id]["user_info"]["stage"]
+                        if stage == "initial":
+                            content += " ¿En qué puedo ayudarte hoy?"
+                        elif stage == "exploring":
+                            content += " ¿Qué aspecto te interesa más?"
+                        elif stage == "interested" or stage == "ready_for_meeting":
+                            content += " ¿Te gustaría agendar una reunión con nuestro equipo?"
+                
+                # Ensure response is not too long (max 160 characters)
+                if len(content) > 160:
+                    content = content[:157] + "..."
                 
                 # Save assistant response to history
                 conversation_contexts[session_id]["messages"].append({"role": "assistant", "content": content})
@@ -302,7 +367,7 @@ def call_ollama_api(prompt, session_id, max_retries=3):
                 return content
             else:
                 print(f"Formato de respuesta inesperado: {response_data}")
-                fallback_response = "¡Hola! Soy Eva de Antares Innovate. ¿Cómo puedo ayudarte hoy con tus proyectos digitales?"
+                fallback_response = "¡Hola! Soy Eva de Antares Innovate. ¿Cómo puedo ayudarte con automatización, marketing o creatividad para tu negocio?"
                 # Save fallback response to history
                 conversation_contexts[session_id]["messages"].append({"role": "assistant", "content": fallback_response})
                 return fallback_response
@@ -314,37 +379,15 @@ def call_ollama_api(prompt, session_id, max_retries=3):
                 print(f"Reintentando en {wait_time} segundos...")
                 time.sleep(wait_time)
             else:
-                fallback_response = "¡Hola! Soy Eva de Antares Innovate. Parece que tengo algunos problemas técnicos. ¿Podríamos intentarlo de nuevo en unos momentos?"
+                fallback_response = "Soy Eva de Antares Innovate. ¿En qué puedo ayudarte con automatización o marketing para tu negocio?"
                 # Save fallback response to history
                 conversation_contexts[session_id]["messages"].append({"role": "assistant", "content": fallback_response})
                 return fallback_response
     
-    fallback_response = "Hola, soy Eva de Antares. ¿En qué puedo ayudarte hoy con tu proyecto digital?"
+    fallback_response = "Soy Eva de Antares. ¿Qué tipo de proyecto de automatización o marketing te interesa impulsar?"
     # Save fallback response to history
     conversation_contexts[session_id]["messages"].append({"role": "assistant", "content": fallback_response})
     return fallback_response
-
-async def text_to_speech(text):
-    """Converts text to speech using Edge TTS"""
-    try:
-        # Remove emojis from text before sending to TTS
-        clean_text = remove_emojis(text)
-        
-        # Create a unique filename using UUID to avoid conflicts
-        temp_filename = f"speech_{uuid.uuid4().hex}.mp3"
-        temp_file_path = os.path.join(TEMP_DIR, temp_filename)
-        
-        # Get communication with Edge TTS
-        communicate = edge_tts.Communicate(clean_text, VOICE, rate=VOICE_RATE, volume=VOICE_VOLUME)
-        
-        # Save the audio to a temporary file
-        await communicate.save(temp_file_path)
-        
-        return temp_file_path
-        
-    except Exception as e:
-        print(f"Error en síntesis de voz: {e}")
-        return None
 
 def initialize_conversation_context(session_id):
     """Initialize a new conversation context for a session"""
@@ -354,8 +397,15 @@ def initialize_conversation_context(session_id):
             "name": None,
             "business": None,
             "industry": None,
+            "email": None,
+            "phone": None,
             "needs": [],
             "interests": [],
+            "meeting_interest": False,
+            "meeting_preference": None,
+            "preferred_day": None,
+            "preferred_time": None,
+            "price_asked": False,
             "stage": "initial"  # initial, exploring, interested, ready_for_meeting
         }
     }
@@ -376,27 +426,12 @@ def chat():
         # Get response from Ollama
         response = call_ollama_api(user_message, session_id)
         
-        # Create audio file asynchronously
-        audio_path = asyncio.run(text_to_speech(response))
-        
         result = {
             'session_id': session_id,
             'message': response,
-            'audio': None
+            'context': conversation_contexts[session_id]["user_info"]  # Devolver el contexto actualizado
         }
         
-        # If audio was generated, read it and convert to base64
-        if audio_path and os.path.exists(audio_path):
-            with open(audio_path, 'rb') as audio_file:
-                audio_data = audio_file.read()
-                result['audio'] = base64.b64encode(audio_data).decode('utf-8')
-            
-            # Clean up the file
-            try:
-                os.remove(audio_path)
-            except:
-                pass
-                
         return jsonify(result)
         
     except Exception as e:
@@ -413,33 +448,18 @@ def initialize_session():
         # Initialize conversation context for this session
         initialize_conversation_context(session_id)
         
-        # Initial message for Eva
-        initial_message = "Hola, soy Eva. ¿Cómo te llamas?"
+        # Initial message for Eva (mejorado para ser más directo)
+        initial_message = "¡Hola! Soy Eva de Antares Innovate. ¿En qué puedo ayudarte con automatización, marketing o creatividad?"
         
         # Save to conversation context
         conversation_contexts[session_id]["messages"].append({"role": "assistant", "content": initial_message})
         
-        # Generate audio for initial message
-        audio_path = asyncio.run(text_to_speech(initial_message))
-        
         result = {
             'session_id': session_id,
             'message': initial_message,
-            'audio': None
+            'context': conversation_contexts[session_id]["user_info"]
         }
         
-        # If audio was generated, read it and convert to base64
-        if audio_path and os.path.exists(audio_path):
-            with open(audio_path, 'rb') as audio_file:
-                audio_data = audio_file.read()
-                result['audio'] = base64.b64encode(audio_data).decode('utf-8')
-            
-            # Clean up the file
-            try:
-                os.remove(audio_path)
-            except:
-                pass
-                
         return jsonify(result)
         
     except Exception as e:
@@ -475,33 +495,92 @@ def reset_conversation():
         # Initialize a new conversation context
         initialize_conversation_context(session_id)
         
-        # Initial message for Eva
-        initial_message = "Hola, soy Eva. ¿Cómo te llamas?"
+        # Initial message for Eva (más directo y enfocado en negocios)
+        initial_message = "¡Hola! Soy Eva de Antares Innovate. ¿En qué puedo ayudarte con automatización, marketing o creatividad para tu negocio?"
         
         # Save to conversation context
         conversation_contexts[session_id]["messages"].append({"role": "assistant", "content": initial_message})
         
-        # Generate audio for initial message
-        audio_path = asyncio.run(text_to_speech(initial_message))
-        
         result = {
             'session_id': session_id,
             'message': initial_message,
-            'audio': None
+            'context': conversation_contexts[session_id]["user_info"]
         }
         
-        # If audio was generated, read it and convert to base64
-        if audio_path and os.path.exists(audio_path):
-            with open(audio_path, 'rb') as audio_file:
-                audio_data = audio_file.read()
-                result['audio'] = base64.b64encode(audio_data).decode('utf-8')
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/meeting', methods=['POST'])
+def request_meeting():
+    """Endpoint para solicitar una reunión directamente"""
+    try:
+        data = request.json
+        
+        if not data or 'session_id' not in data:
+            return jsonify({'error': 'No session_id provided'}), 400
             
-            # Clean up the file
-            try:
-                os.remove(audio_path)
-            except:
-                pass
-                
+        session_id = data.get('session_id')
+        name = data.get('name')
+        email = data.get('email')
+        phone = data.get('phone')
+        business = data.get('business')
+        needs = data.get('needs', [])
+        preferred_date = data.get('preferred_date')
+        preferred_time = data.get('preferred_time')
+        meeting_type = data.get('meeting_type', 'virtual')
+        
+        # Asegúrate de que el contexto de conversación existe
+        if session_id not in conversation_contexts:
+            initialize_conversation_context(session_id)
+        
+        # Actualizar información del contexto
+        context = conversation_contexts[session_id]["user_info"]
+        if name:
+            context["name"] = name
+        if email:
+            context["email"] = email
+        if phone:
+            context["phone"] = phone
+        if business:
+            context["business"] = business
+        if needs:
+            for need in needs:
+                if need not in context["needs"]:
+                    context["needs"].append(need)
+        
+        context["meeting_interest"] = True
+        context["stage"] = "ready_for_meeting"
+        if meeting_type:
+            context["meeting_preference"] = meeting_type
+        if preferred_date:
+            context["preferred_day"] = preferred_date
+        if preferred_time:
+            context["preferred_time"] = preferred_time
+        
+        # Crear mensaje de confirmación
+        if context["name"]:
+            confirmation_message = f"¡Gracias {context['name']}! He registrado tu solicitud de reunión. Nuestro equipo te contactará pronto"
+        else:
+            confirmation_message = "¡Gracias! He registrado tu solicitud de reunión. Nuestro equipo te contactará pronto"
+            
+        if context["email"] or context["phone"]:
+            confirmation_message += " a través de los datos que proporcionaste. ¿Hay algo más en lo que pueda ayudarte?"
+        else:
+            confirmation_message += ". ¿Podrías proporcionarme tu email o número de teléfono para que puedan contactarte?"
+        
+        # Guardar respuesta en el historial
+        conversation_contexts[session_id]["messages"].append({"role": "assistant", "content": confirmation_message})
+        
+        result = {
+            'session_id': session_id,
+            'message': confirmation_message,
+            'context': conversation_contexts[session_id]["user_info"],
+            'meeting_requested': True
+        }
+        
         return jsonify(result)
         
     except Exception as e:
@@ -511,15 +590,13 @@ def reset_conversation():
 @app.route('/api/config', methods=['GET', 'POST'])
 def handle_config():
     """Get or update configuration"""
-    global LOCAL_OLLAMA_URL, MODEL_NAME, VOICE, VOICE_RATE, VOICE_VOLUME
+    global LOCAL_OLLAMA_URL, MODEL_NAME, EVA_CONTEXT
     
     if request.method == 'GET':
         return jsonify({
             'ollama_url': LOCAL_OLLAMA_URL,
             'model_name': MODEL_NAME,
-            'voice': VOICE,
-            'voice_rate': VOICE_RATE,
-            'voice_volume': VOICE_VOLUME
+            'prompt_context': EVA_CONTEXT
         })
     elif request.method == 'POST':
         try:
@@ -529,38 +606,93 @@ def handle_config():
                 LOCAL_OLLAMA_URL = data['ollama_url']
             if 'model_name' in data:
                 MODEL_NAME = data['model_name']
-            if 'voice' in data:
-                VOICE = data['voice']
-            if 'voice_rate' in data:
-                VOICE_RATE = data['voice_rate']
-            if 'voice_volume' in data:
-                VOICE_VOLUME = data['voice_volume']
+            if 'prompt_context' in data:
+                EVA_CONTEXT = data['prompt_context']
                 
             return jsonify({
                 'ollama_url': LOCAL_OLLAMA_URL,
                 'model_name': MODEL_NAME,
-                'voice': VOICE,
-                'voice_rate': VOICE_RATE,
-                'voice_volume': VOICE_VOLUME,
+                'prompt_context': EVA_CONTEXT,
                 'status': 'updated'
             })
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
-@app.route('/api/voices', methods=['GET'])
-async def list_voices_endpoint():
-    """Get available voices from Edge TTS"""
+@app.route('/api/available_slots', methods=['GET'])
+def available_slots():
+    """Endpoint que devuelve slots disponibles para reuniones (simulados)"""
     try:
-        voices = await edge_tts.list_voices()
+        # Obtener la fecha actual
+        today = datetime.now()
         
-        # Filter Spanish voices
-        spanish_voices = [v for v in voices if v["ShortName"].startswith("es-")]
+        # Generar slots disponibles para los próximos 5 días laborables
+        available_slots = []
+        
+        for i in range(1, 8):  # Próximos 7 días
+            current_date = today + timedelta(days=i)
+            
+            # Saltear fines de semana
+            if current_date.weekday() >= 5:  # 5=Sábado, 6=Domingo
+                continue
+                
+            # Generar slots de 1 hora entre 9am y 5pm
+            for hour in range(9, 17):
+                # Simular que algunos slots ya están ocupados
+                if (current_date.day + hour) % 3 != 0:  # Un patrón simple para que algunos slots estén ocupados
+                    slot = {
+                        'date': current_date.strftime('%Y-%m-%d'),
+                        'day': ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'][current_date.weekday()],
+                        'time': f"{hour}:00",
+                        'end_time': f"{hour+1}:00",
+                        'available': True
+                    }
+                    available_slots.append(slot)
         
         return jsonify({
-            'all_voices': voices,
-            'spanish_voices': spanish_voices
+            'slots': available_slots
         })
+        
     except Exception as e:
+        print(f"Error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/leads', methods=['GET'])
+def get_leads():
+    """Endpoint para obtener los leads generados (para integración con CRM)"""
+    try:
+        # Extraer leads basados en conversaciones que han llegado a la etapa ready_for_meeting
+        leads = []
+        
+        for session_id, context in conversation_contexts.items():
+            user_info = context["user_info"]
+            
+            # Solo considerar como leads aquellos que han mostrado interés en una reunión
+            if user_info["stage"] == "ready_for_meeting" or user_info["meeting_interest"]:
+                # Crear un objeto lead con la información disponible
+                lead = {
+                    'session_id': session_id,
+                    'name': user_info["name"] or "Desconocido",
+                    'email': user_info["email"] or None,
+                    'phone': user_info["phone"] or None,
+                    'business': user_info["business"] or None,
+                    'industry': user_info["industry"] or None,
+                    'needs': user_info["needs"],
+                    'meeting_preference': user_info["meeting_preference"] or "No especificado",
+                    'preferred_day': user_info["preferred_day"] or None,
+                    'preferred_time': user_info["preferred_time"] or None,
+                    'last_interaction': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'complete_info': bool(user_info["email"] or user_info["phone"])
+                }
+                
+                leads.append(lead)
+        
+        return jsonify({
+            'leads': leads,
+            'total': len(leads)
+        })
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/health', methods=['GET'])
@@ -568,18 +700,237 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'ok',
-        'api_version': '1.0.0',
-        'service': 'Eva TTS Web API'
+        'api_version': '1.1.0',
+        'service': 'Eva - Asistente Virtual de Antares Innovate'
     })
 
 # Ruta básica para la raíz
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
-        'name': 'Eva TTS Web API',
-        'version': '1.0.0',
-        'status': 'running'
+        'name': 'Eva - Asistente Virtual de Antares Innovate',
+        'version': '1.1.0',
+        'status': 'running',
+        'description': 'API para el chatbot Eva de Antares Innovate'
     })
+
+@app.route('/admin', methods=['GET'])
+def admin_panel():
+    """Panel de administración simplificado"""
+    html = """
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Eva - Panel de Administración</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            body { 
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background-color: #f8f9fa;
+                padding: 20px; 
+            }
+            .card {
+                border-radius: 10px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                margin-bottom: 20px;
+            }
+            .card-header {
+                background-color: #4a4be9;
+                color: white;
+                border-radius: 10px 10px 0 0 !important;
+                font-weight: 600;
+            }
+            .badge-needs {
+                background-color: #6c5ce7;
+                color: white;
+                margin-right: 4px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="row">
+                <div class="col-12 text-center mb-4">
+                    <h1>Eva - Asistente Virtual</h1>
+                    <p class="lead">Panel de Administración Antares Innovate</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header">
+                            Leads Generados
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped" id="leads-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Nombre</th>
+                                            <th>Email</th>
+                                            <th>Teléfono</th>
+                                            <th>Empresa</th>
+                                            <th>Necesidades</th>
+                                            <th>Última Interacción</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="leads-body">
+                                        <tr>
+                                            <td colspan="6" class="text-center">Cargando leads...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            Configuración
+                        </div>
+                        <div class="card-body">
+                            <form id="config-form">
+                                <div class="mb-3">
+                                    <label for="model" class="form-label">Modelo LLM</label>
+                                    <input type="text" class="form-control" id="model" name="model">
+                                </div>
+                                <div class="mb-3">
+                                    <label for="url" class="form-label">URL de API</label>
+                                    <input type="text" class="form-control" id="url" name="url">
+                                </div>
+                                <button type="submit" class="btn btn-primary">Guardar</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            Estadísticas
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-6">
+                                    <div class="card bg-light mb-3">
+                                        <div class="card-body text-center">
+                                            <h3 id="total-conversations">-</h3>
+                                            <p class="mb-0">Conversaciones</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="card bg-light mb-3">
+                                        <div class="card-body text-center">
+                                            <h3 id="total-leads">-</h3>
+                                            <p class="mb-0">Leads</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+        <script>
+            // Cargar datos al iniciar
+            document.addEventListener('DOMContentLoaded', function() {
+                loadLeads();
+                loadConfig();
+                
+                // Configurar el formulario
+                document.getElementById('config-form').addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    saveConfig();
+                });
+            });
+            
+            // Cargar leads
+            function loadLeads() {
+                fetch('/api/leads')
+                    .then(response => response.json())
+                    .then(data => {
+                        const leadsTable = document.getElementById('leads-body');
+                        document.getElementById('total-leads').textContent = data.total;
+                        document.getElementById('total-conversations').textContent = Object.keys(data.leads).length;
+                        
+                        if (data.leads.length === 0) {
+                            leadsTable.innerHTML = '<tr><td colspan="6" class="text-center">No hay leads generados aún</td></tr>';
+                            return;
+                        }
+                        
+                        leadsTable.innerHTML = '';
+                        data.leads.forEach(lead => {
+                            const needsBadges = lead.needs.map(need => 
+                                `<span class="badge badge-needs">${need}</span>`
+                            ).join(' ');
+                            
+                            leadsTable.innerHTML += `
+                                <tr>
+                                    <td>${lead.name}</td>
+                                    <td>${lead.email || '-'}</td>
+                                    <td>${lead.phone || '-'}</td>
+                                    <td>${lead.business || '-'}</td>
+                                    <td>${needsBadges || '-'}</td>
+                                    <td>${lead.last_interaction}</td>
+                                </tr>
+                            `;
+                        });
+                    })
+                    .catch(error => console.error('Error:', error));
+            }
+            
+            // Cargar configuración
+            function loadConfig() {
+                fetch('/api/config')
+                    .then(response => response.json())
+                    .then(data => {
+                        document.getElementById('model').value = data.model_name;
+                        document.getElementById('url').value = data.ollama_url;
+                    })
+                    .catch(error => console.error('Error:', error));
+            }
+            
+            // Guardar configuración
+            function saveConfig() {
+                const model = document.getElementById('model').value;
+                const url = document.getElementById('url').value;
+                
+                fetch('/api/config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model_name: model,
+                        ollama_url: url
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    alert('Configuración guardada correctamente');
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error al guardar la configuración');
+                });
+            }
+        </script>
+    </body>
+    </html>
+    """
+    return html
 
 if __name__ == "__main__":
     # Obtener puerto de las variables de entorno o usar 5000 por defecto
