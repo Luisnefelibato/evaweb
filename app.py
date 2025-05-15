@@ -22,7 +22,7 @@ CORS(app)  # Habilitar CORS para todas las rutas
 conversation_contexts = {}
 
 # Configure according to your Ollama instance
-LOCAL_OLLAMA_URL = "https://evaenespanol.loca.lt/api/chat"
+LOCAL_OLLAMA_URL = "http://173.249.8.251:11434"
 MODEL_NAME = "neural-chat:7b"
 
 EVA_CONTEXT = """
@@ -615,7 +615,7 @@ def handle_config():
                 'status': 'updated'
             })
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            return jsonify({'error': str(e)}), 1500
 
 @app.route('/api/available_slots', methods=['GET'])
 def available_slots():
